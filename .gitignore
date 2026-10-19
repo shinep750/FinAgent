@@ -1,0 +1,8 @@
+AppData/
+.android/
+.antigravity-ide/
+customers.csv
+products.csv
+orders.csv
+__pycache__/
+.streamlit/
