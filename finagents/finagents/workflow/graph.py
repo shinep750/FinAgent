@@ -212,7 +212,7 @@ class FinancialResearchWorkflow:
                 }
 
         if self.settings.parallel_agents and len(tasks) > 1:
-            with ThreadPoolExecutor(max_workers=min(4, len(tasks))) as pool:
+            with ThreadPoolExecutor(max_workers=len(tasks)) as pool:
                 results = list(pool.map(run_one, tasks))
         else:
             results = [run_one(task) for task in tasks]
