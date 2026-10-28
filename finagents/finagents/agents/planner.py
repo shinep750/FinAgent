@@ -630,9 +630,11 @@ class PlannerAgent:
         ticker-shaped token (e.g., a delisted symbol) still counts so the run
         can degrade gracefully. Everything else is out of scope.
 
-        Now supports Indian and Global companies.
+        Now supports Indian and Global companies based on LLM intent.
         """
-        if intent.tickers:
+        if intent.tickers or query.tickers:
+            return True
+        if intent.in_scope is True:
             return True
         tokens = _SYMBOL_TOKEN_RE.findall(query.raw_text)
         return any(token not in _NON_SYMBOL_WORDS for token in tokens)
@@ -729,8 +731,8 @@ class PlannerAgent:
                 intent.tickers = prior_tickers
         elif not self._in_scope(query, intent):
             raise OutOfScopeError(
-                "This assistant only covers publicly traded companies. Name a "
-                "company or ticker (for example NVDA, AAPL or MSFT) and ask about "
+                "This assistant covers publicly traded companies globally. Name a "
+                "company or ticker (for example RELIANCE, TCS or NVDA) and ask about "
                 "its filings, news, fundamentals, valuation, risks or price action."
             )
 
