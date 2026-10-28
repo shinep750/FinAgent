@@ -188,9 +188,9 @@ _DECISION_PHRASES: tuple[str, ...] = (
     "any good",
 )
 
-# A ticker-shaped uppercase token ("ZZZZ") is a scope signal even when EDGAR
-# cannot resolve it: the user is asking about a company, so the run should
-# degrade with an honest empty report rather than be refused. Question words
+# A ticker-shaped uppercase token ("ZZZZ") is a scope signal even when the data
+# provider cannot resolve it: the user is asking about a company, so the run
+# should degrade with an honest empty report rather than be refused. Question words
 # and ordinary uppercase words are excluded so "WHAT IS THE CAPITAL OF FRANCE?"
 # is not mistaken for a symbol.
 _SYMBOL_TOKEN_RE = re.compile(r"\b([A-Z]{2,5}(?:[.-][A-Z]{1,2})?)\b")
@@ -327,36 +327,14 @@ class PlannerAgent:
         ]
 
     # -- entity resolution ------------------------------------------------
-
     def resolve_tickers(self, query: UserQuery) -> List[str]:
         """Find the securities a query is about, from the text alone.
 
-        Order matters: an explicit `$TICKER` is authoritative, then caller-supplied
-        tickers. Every candidate is validated against EDGAR's ticker map, so a
-        hallucinated or delisted symbol is dropped here rather than sending
-        retrieval after documents that do not exist.
-
-        The original casing is the only thing separating a ticker from an English
-        word, so the text is scanned as written and never upper-cased first.
-        EDGAR's map contains several hundred ordinary words as symbols - `ARE`,
-        `MAIN`, `CAN`, `KEY`, `NOW`, `ONE`, `BIG`, `ALL`, `BEST`, `NEXT` - so
-        scanning an upper-cased copy resolves "What are the main risks facing
-        NVDA?" to NVDA, ARE and MAIN, and the report then reasons about
-        Alexandria Real Estate using NVDA's filings. Precision here matters more
-        than recall: a prose reference to a company in lowercase is still
-        recovered, because the planner's prompt asks the model to name the
-        securities it is about.
+        Now supports Global and Indian markets. Validates against the provider
+        rather than just the US SEC EDGAR map.
         """
         found: List[str] = []
         text = query.raw_text
-        # Share classes are one token with punctuation: `BRK-B`, `BAC-PB`. The
-        # character class has to admit the separator, or "what about BRK-B" yields
-        # the truncated, nonexistent `BRK` plus a stray letter.
-        #
-        # `$` makes a token a ticker at any casing - it is the one unambiguous
-        # marker a user can type, and `$nvda` is how most people write one. A bare
-        # token only counts if it was typed in caps, because caps is the only
-        # remaining evidence that "MAIN" is a symbol and not a word.
         for candidate in re.findall(
             r"\$\s*([A-Za-z][A-Za-z.]{0,4}(?:[-.][A-Za-z]{1,2})?)", text
         ):
@@ -374,7 +352,7 @@ class PlannerAgent:
         return found
 
     def _accept(self, candidate: str, found: Sequence[str]) -> Optional[str]:
-        """Validate one candidate against EDGAR, ignoring ones already found."""
+        """Validate one candidate against the provider, ignoring ones already found."""
         ticker = (
             self.provider.resolve_ticker(candidate)
             if self.provider
@@ -385,7 +363,6 @@ class PlannerAgent:
         return None
 
     # -- intent -----------------------------------------------------------
-
     def analyse_intent(
         self, query: UserQuery, context: Optional[Dict[str, Any]] = None
     ) -> Intent:
@@ -415,13 +392,12 @@ class PlannerAgent:
                 f"{context_block}"
                 "STEP 1 - INTENT ANALYSIS. Identify the user's goal, the type of "
                 "question, the time horizon, and which data sources are needed. "
-                "List the US-listed tickers the query is about. Tickers are "
-                "resolved against SEC EDGAR, so a company name is acceptable; do "
-                "not invent symbols for private or non-US companies. Only return "
-                "tickers when the query is about a publicly traded company, "
-                "security, market or investing; for general knowledge, coding, "
-                "weather, personal advice or any other topic, return an empty "
-                "tickers list and set in_scope to false."
+                "List the tickers the query is about. Tickers are resolved against "
+                "market providers, so a company name is acceptable; do not invent "
+                "symbols for private companies. Only return tickers when the query "
+                "is about a publicly traded company, security, market or investing; "
+                "for general knowledge, coding, weather, personal advice or any other "
+                "topic, return an empty tickers list and set in_scope to false."
             ),
             output_schema=(
                 '{"goal": "string", "question_type": "string", "tickers": ["TICKER"], '
@@ -474,7 +450,6 @@ class PlannerAgent:
         )
 
     # -- perspective identification ---------------------------------------
-
     def _matched_perspectives(self, query: UserQuery) -> List[Perspective]:
         """Perspectives named explicitly by the question text."""
         lowered = query.raw_text.lower()
@@ -483,10 +458,6 @@ class PlannerAgent:
             for perspective, keywords in _PERSPECTIVE_KEYWORDS.items()
             if any(keyword in lowered for keyword in keywords)
         ]
-        # A buy/sell/hold question cannot be answered from a single lens, so
-        # these phrases force fundamental and risk in regardless of the
-        # individual keywords. Without this, "Should I buy X?" would return a
-        # question with a risk memo.
         if any(phrase in lowered for phrase in _DECISION_PHRASES):
             _add(chosen, Perspective.FUNDAMENTAL)
             _add(chosen, Perspective.RISK)
@@ -503,12 +474,10 @@ class PlannerAgent:
         if intent.needs_risk:
             _add(chosen, Perspective.RISK)
         if not chosen:
-            # An unqualified equity question is still a fundamental question.
             chosen = [Perspective.FUNDAMENTAL, Perspective.NEWS, Perspective.RISK]
         return chosen
 
     # -- decomposition ----------------------------------------------------
-
     def decompose(
         self, query: UserQuery, intent: Intent, perspectives: Sequence[Perspective]
     ) -> List[TaskSpec]:
@@ -563,13 +532,10 @@ class PlannerAgent:
                 continue
             agent = str(raw.get("assigned_agent", "")).strip()
             if agent not in valid or valid[agent] != perspective:
-                # Route by perspective rather than trusting the label.
                 agent = next(a for a, p in valid.items() if p == perspective)
             tasks.append(self._build_task(raw, perspective, agent, intent))
             seen.add(perspective)
 
-        # Guarantee coverage: a missing perspective gets a sensible default task
-        # rather than silently vanishing from the analysis.
         for perspective in perspectives:
             if perspective not in seen:
                 logger.info(
@@ -591,7 +557,6 @@ class PlannerAgent:
             except ValueError:
                 continue
         tickers = [t.upper() for t in (filters or {}).get("tickers", []) or []]
-        # Ticker filters come from resolved intent, not the model.
         if intent.tickers:
             tickers = intent.tickers
         focus = [str(m)[:60] for m in (raw.get("focus_metrics") or [])][:8]
@@ -622,14 +587,6 @@ class PlannerAgent:
     def _grounded_doc_types(
         perspective: Perspective, chosen: List[EvidenceType]
     ) -> List[EvidenceType]:
-        """Eligible doc types for a task.
-
-        The model's own filter is honoured when it gives one, but a
-        news-grounded perspective always keeps a news channel: an analysis
-        built purely on filings would be blind to what the market is currently
-        repricing, and the retriever's per-outlet cap already keeps news a
-        minority voice rather than a flood.
-        """
         types = chosen or list(_DEFAULT_TYPES[perspective])
         if perspective in _NEWS_GROUNDED and EvidenceType.NEWS not in types:
             types = [EvidenceType.NEWS] + [t for t in types if t != EvidenceType.NEWS]
@@ -667,12 +624,14 @@ class PlannerAgent:
         )
 
     # -- entry point ------------------------------------------------------
-
     def _in_scope(self, query: UserQuery, intent: Intent) -> bool:
         """A research run only makes sense when the question has a company in
         it. Resolved tickers are the strongest signal; an unresolved but
-        ticker-shaped token (e.g. a delisted symbol) still counts so the run
-        can degrade gracefully. Everything else is out of scope."""
+        ticker-shaped token (e.g., a delisted symbol) still counts so the run
+        can degrade gracefully. Everything else is out of scope.
+
+        Now supports Indian and Global companies.
+        """
         if intent.tickers:
             return True
         tokens = _SYMBOL_TOKEN_RE.findall(query.raw_text)
@@ -701,11 +660,6 @@ class PlannerAgent:
     def _follow_up_in_scope(
         self, query: UserQuery, intent: Intent, context: Dict[str, Any]
     ) -> bool:
-        """In a conversation, an omitted subject means the previous one, but an
-        unrelated question must still be refused rather than answered about the
-        old company. The model's in_scope verdict is authoritative when it gives
-        one; otherwise a finance cue, a named ticker or an explicit reference to
-        the prior subject ("why?", "its margins") is required."""
         if intent.tickers or query.tickers:
             return True
         if intent.in_scope is not None:
@@ -724,12 +678,6 @@ class PlannerAgent:
         intent: Intent,
         context: Dict[str, Any],
     ) -> TaskSpec:
-        """A focused task for a follow-up, built without a second planning call.
-
-        The follow-up text becomes the retrieval query and the task description,
-        so the specialist answers the actual question instead of the generic
-        perspective prompt used for a fresh run.
-        """
         base = self._default_task(perspective, intent)
         subject = ", ".join(intent.tickers) or "the subject company"
         question = query.raw_text.strip()
@@ -788,16 +736,12 @@ class PlannerAgent:
 
         if not intent.tickers and query.tickers:
             intent.tickers = list(query.tickers)
-        # An explicitly ticker-shaped but unresolvable symbol (e.g. a delisted
-        # one) is in scope and degrades to a report over whatever evidence is
-        # available; it is not refused like an unrelated question.
         if intent.tickers and not query.tickers:
             query.tickers = list(intent.tickers)
 
         if context is not None:
             perspectives = self._matched_perspectives(query)
             if not perspectives:
-                # "Why?" or "how so?" inherits the lens of the answer it follows.
                 perspectives = self._prior_perspectives(context) or [
                     Perspective.FUNDAMENTAL,
                     Perspective.NEWS,
