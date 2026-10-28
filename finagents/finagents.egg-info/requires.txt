@@ -1,0 +1,12 @@
+pydantic>=2.6
+langgraph>=0.0.40
+numpy>=1.26
+pandas>=2.0
+httpx>=0.27
+python-dateutil>=2.9
+
+[dev]
+pytest>=8.0
+
+[live]
+yfinance>=0.2.40

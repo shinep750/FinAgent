@@ -1,0 +1,35 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "finagents"
+version = "0.1.0"
+description = "Multi-Agent Financial Reasoning and Decision Support System: an explainable, evidence-driven agentic AI framework."
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "pydantic>=2.6",
+    "langgraph>=0.0.40",
+    "numpy>=1.26",
+    "pandas>=2.0",
+    "httpx>=0.27",
+    "python-dateutil>=2.9",
+    "yfinance>=0.2.40",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0"]
+
+[project.scripts]
+finagents = "finagents.cli:main"
+
+[tool.setuptools.packages.find]
+include = ["finagents*"]
+
+[tool.setuptools.package-data]
+finagents = ["prompts/*.txt"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+filterwarnings = ["ignore::DeprecationWarning"]

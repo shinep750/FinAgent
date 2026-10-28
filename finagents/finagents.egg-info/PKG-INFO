@@ -1,0 +1,212 @@
+Metadata-Version: 2.4
+Name: finagents
+Version: 0.1.0
+Summary: Multi-Agent Financial Reasoning and Decision Support System: an explainable, evidence-driven agentic AI framework.
+Requires-Python: >=3.10
+Description-Content-Type: text/markdown
+Requires-Dist: pydantic>=2.6
+Requires-Dist: langgraph>=0.0.40
+Requires-Dist: numpy>=1.26
+Requires-Dist: pandas>=2.0
+Requires-Dist: httpx>=0.27
+Requires-Dist: python-dateutil>=2.9
+Provides-Extra: dev
+Requires-Dist: pytest>=8.0; extra == "dev"
+Provides-Extra: live
+Requires-Dist: yfinance>=0.2.40; extra == "live"
+
+# finagents
+
+A multi-agent financial reasoning and decision-support system. It answers a
+question about a company by planning which lenses are needed, retrieving
+evidence for each one, having specialist agents reason independently, verifying
+every claim against the cited source, and then synthesising a report in which
+each number can be traced back to the document it came from.
+
+The design assumption is that an unsourced financial answer is worse than no
+answer. Every claim in the output carries a citation; every citation carries a
+retrieval score and the reason it was selected; every confidence number is
+decomposed into components a reader can disagree with individually.
+
+## Architecture
+
+```
+                      +-------------+
+   UserQuery -------> |   Planner   |  intent, perspective selection, task decomposition
+                      +------+------+
+                             | tasks
+        +--------------------+--------------------+
+        v                    v                    v
+  +-----------+        +-----------+        +-----------+
+  | Financial |        |   News    |        | Technical |   (+ Risk)
+  +-----+-----+        +-----+-----+        +-----+-----+
+        |                    |                    |
+        +--------------------+--------------------+
+                             | findings + citations
+                      +------+------+
+                      |  Retrieval   |  BM25 + embeddings + metadata gate + KG prior,
+                      +------+------+  fused by RRF
+                             |
+                      +------+------+
+                      |  Verifier   |  citation integrity, numeric check, entailment
+                      +------+------+  -> verdict per claim
+                             |
+                      +------+------+
+                      | Synthesis   |  only verified claims reach the thesis
+                      +------+------+
+                             |
+                      FinancialResearchReport
+```
+
+Orchestration is a LangGraph state machine (`finagents/workflow/`), so each
+stage is a node that can be inspected, retried or checkpointed independently:
+
+```
+plan -> retrieve -> analyse -> verify -> synthesise -> report
+                                      \-> fail
+```
+
+`analyse` fans out across the specialised agents concurrently; each agent
+failing is recorded in `errors` and the run continues, because a memo built
+from three lenses beats no memo.
+
+## Modules
+
+| Module | Responsibility |
+| --- | --- |
+| `finagents/schemas.py` | Every domain model: query, plan, task, finding, claim, citation, verification, conflict, confidence, report |
+| `finagents/llm/` | `LLMClient` contract, Ollama REST client, deterministic offline client, provider factory |
+| `finagents/data/` | Synthetic corpus, deterministic OHLCV generation, indicators, offline and live market-data providers |
+| `finagents/retrieval/` | BM25, hashing/Ollama embedder, metadata filters, RRF fusion, financial knowledge graph |
+| `finagents/agents/` | Planner plus the financial, news, technical and risk agents |
+| `finagents/verification/` | Claim verifier, conflict detector, confidence assessor, gated synthesizer |
+| `finagents/workflow/` | LangGraph state, nodes, edges, fault policy |
+| `finagents/reporting/` | Human-readable and JSON report rendering |
+| `finagents/cli.py` | `finagents` entry point |
+
+## Install
+
+Requires Python 3.10+ (developed on 3.12).
+
+```bash
+cd finagents
+python -m venv .venv
+.venv\Scripts\activate        # Windows
+# source .venv/bin/activate   # macOS/Linux
+
+pip install -e ".[dev]"
+```
+
+### Enabling real model reasoning
+
+The system is designed to run entirely against a local Ollama model — no API
+keys, no cloud calls.
+
+```bash
+# 1. Install Ollama from https://ollama.com/download
+ollama serve
+# 2. Pull the model
+ollama pull llama3.1
+ollama pull nomic-embed-text     # optional: real embeddings instead of hashing
+```
+
+Check the wiring at any time:
+
+```bash
+finagents --doctor
+```
+
+Without Ollama the system falls back to a deterministic offline client and says
+so loudly in the log. To make a missing Ollama a hard error instead — the right
+choice in production — pass `allow_fallback=False` to
+`finagents.llm.build_llm_client`.
+
+## Usage
+
+```bash
+# Research a question
+finagents "What are the main risks facing NVDA?"
+
+# Force a ticker and get machine-readable output
+finagents --json --ticker NVDA "Is the valuation justified?"
+
+# Sequential agents, no verification layer, wider retrieval
+finagents --sequential --no-verify --top-k 12 "Analyse AAPL fundamentals"
+
+# Provider health
+finagents --doctor
+```
+
+Exit codes: `0` success, `1` failure, `2` no query, `3` the run completed but
+confidence fell below the floor.
+
+### As a library
+
+```python
+from finagents.schemas import Settings, UserQuery
+from finagents.workflow import FinancialResearchWorkflow
+from finagents.reporting import render
+
+workflow = FinancialResearchWorkflow(Settings(llm_provider="ollama"))
+state = workflow.run(UserQuery(raw_text="What are the main risks facing NVDA?"))
+
+print(render(state.report))
+print(state.report.overall_stance, state.report.confidence.overall)
+```
+
+## Configuration
+
+Settings are read from the environment, prefix `FINAGENTS_`:
+
+| Variable | Default | Meaning |
+| --- | --- | --- |
+| `FINAGENTS_LLM_PROVIDER` | `ollama` | `ollama` or `offline` |
+| `FINAGENTS_OLLAMA_BASE_URL` | `http://localhost:11434` | Ollama endpoint |
+| `FINAGENTS_OLLAMA_MODEL` | `llama3.1` | reasoning model |
+| `FINAGENTS_OLLAMA_EMBEDDING_MODEL` | `nomic-embed-text` | embedding model |
+| `FINAGENTS_LLM_TEMPERATURE` | `0.0` | sampling temperature |
+| `FINAGENTS_LLM_MAX_TOKENS` | `2048` | response cap |
+| `FINAGENTS_LLM_TIMEOUT_S` | `120` | request timeout |
+| `FINAGENTS_DATA_SOURCE` | `offline` | `offline` or `live` |
+| `FINAGENTS_TOP_K` | `8` | documents per single search |
+| `FINAGENTS_TOP_K_PER_TASK` | `6` | documents per planner task |
+| `FINAGENTS_KG_MAX_HOPS` | `2` | knowledge-graph traversal depth |
+| `FINAGENTS_PARALLEL` | `true` | run agents concurrently |
+| `FINAGENTS_VERIFY` | `true` | run the verification layer |
+
+## Data
+
+The default corpus is **synthetic**. Every document carries
+`metadata.synthetic = true`, the CLI prints a warning on every run, and the
+figures belong to invented issuers ("Nova Compute Systems"). They are here to
+exercise the pipeline, and they say nothing about any real company.
+
+`--data-source live` switches market data to yfinance (`pip install -e
+".[live]"`). The bundled documents remain synthetic; the retriever does not
+fabricate documents to fill the gap.
+
+## Tests
+
+```bash
+pytest              # 110 tests, ~10s
+```
+
+The suite runs entirely offline against the deterministic client — no network,
+no model daemon, no keys. That is a constraint, not a convenience: a test suite
+for a financial system that quietly depends on a local daemon is a suite that
+stops being runnable the moment the daemon is not up. The offline client is
+held to the same JSON contract as Ollama, and the tests assert that.
+
+The adversarial cases are the interesting ones: a claim citing a figure its own
+source does not contain, a claim citing a document that was never retrieved, an
+uncited claim, a duplicated claim, a neutral lens, and an agent that raises
+mid-run. Each is expected to be caught, not smoothed over.
+
+## Limitations
+
+- The offline client extracts sentences verbatim; it does not reason. Real
+  multi-step reasoning requires Ollama.
+- The seed knowledge graph is a small hand-built graph, not a mined one.
+- No backtesting: nothing here is evidence that the system produces profitable
+  recommendations.
+- Not investment advice.
