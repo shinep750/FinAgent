@@ -430,12 +430,13 @@ function ringHTML(overall) {
   const circ = 2 * Math.PI * r;
   const pctv = Math.max(0, Math.min(1, Number(overall || 0)));
   const dash = circ * pctv;
+  const offset = circ - dash;
   return (
     `<div class="ring">` +
     `<svg width="92" height="92" viewBox="0 0 92 92">` +
     `<circle cx="46" cy="46" r="${r}" fill="none" stroke="var(--surface-3)" stroke-width="8"/>` +
     `<circle cx="46" cy="46" r="${r}" fill="none" stroke="url(#grad)" stroke-width="8" ` +
-    `stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${(circ - dash).toFixed(1)}"/>` +
+    `stroke-linecap="round" stroke-dasharray="${dash.toFixed(1)} ${offset.toFixed(1)}" stroke-dashoffset="0" transform="rotate(-90 46 46)"/>` +
     `<defs><linearGradient id="grad" x1="0" y1="0" x2="1" y2="1">` +
     `<stop offset="0" stop-color="var(--accent)"/><stop offset="1" stop-color="var(--accent-2)"/>` +
     `</linearGradient></defs></svg>` +
