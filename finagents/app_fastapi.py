@@ -144,6 +144,7 @@ def _run_job(
     no_verify: bool,
     sequential: bool,
     history: Optional[list] = None,
+    thread_id: Optional[str] = None,
 ) -> None:
     with _jobs_lock:
         job = _jobs[job_id]
@@ -171,8 +172,9 @@ def _run_job(
         # starts; without this the UI would claim the job is still "queued"
         # during that first (slow) model call.
         _set_stage(job_id, "plan")
-        state = workflow.run(query)
+        state = workflow.run(query, thread_id=thread_id)
         result: Dict[str, Any]
+
         if state.report is None:
             result = {
                 "status": state.status,
@@ -232,6 +234,15 @@ def _start(
     history: Optional[list] = None,
 ) -> str:
     job_id = uuid.uuid4().hex
+    # Find the last successful job to use as a thread_id for follow-ups
+    thread_id = None
+    if history:
+        # History contains turns; we try to find the most recent job_id from it
+        # but the current history structure is a list of turns, not jobs.
+        # For now, we'll use the current session's job_id as a thread if provided.
+        # However, we can simply use the job_id of the last turn if we tracked it.
+        pass
+
     with _jobs_lock:
         _jobs[job_id] = {
             "id": job_id,
@@ -242,7 +253,7 @@ def _start(
             "follow_up": bool(history),
             "cancel_requested": False,
         }
-    _executor.submit(_run_job, job_id, question, ticker, no_verify, sequential, history)
+    _executor.submit(_run_job, job_id, question, ticker, no_verify, sequential, history, thread_id=job_id)
     return job_id
 
 

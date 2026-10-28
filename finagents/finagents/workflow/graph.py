@@ -155,9 +155,15 @@ class FinancialResearchWorkflow:
         total = 0
         for task in plan.tasks:
             self._check_cancel()
-            hits = self.retriever.search_for_task(
-                task, top_k=self.settings.retrieval_per_task_k
-            )
+            # Warm-start: if we already have evidence for this task in the state, reuse it.
+            # In a follow-up, the Planner might reuse task IDs or we can match by perspective.
+            existing = state.evidence_by_task.get(task.task_id, [])
+            if existing:
+                hits = existing
+            else:
+                hits = self.retriever.search_for_task(
+                    task, top_k=self.settings.retrieval_per_task_k
+                )
             by_task[task.task_id] = hits
             total += len(hits)
         elapsed = (time.perf_counter() - started) * 1000
